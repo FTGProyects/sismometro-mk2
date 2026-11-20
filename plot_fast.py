@@ -13,10 +13,32 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 import threading
 import time
 from collections import deque
+
+
+class _SalidaNula:
+    """PyInstaller sin consola deja stdout y stderr en None."""
+
+    def write(self, *_args, **_kwargs) -> int:
+        return 0
+
+    def flush(self) -> None:
+        return None
+
+    def isatty(self) -> bool:
+        return False
+
+
+if sys.stdout is None:
+    sys.stdout = _SalidaNula()  # type: ignore[assignment]
+if sys.stderr is None:
+    sys.stderr = _SalidaNula()  # type: ignore[assignment]
+
+os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
 
 import numpy as np
 import pyqtgraph as pg
@@ -173,7 +195,8 @@ class LectorSerial:
         self.onda: dict[str, np.ndarray | float] | None = None
         self._espera_muestras: dict[str, float] | None = None
         self.estado = "Conectando..."
-        threading.Thread(target=self._bucle, daemon=True, name="serial").start()
+        self._hilo = threading.Thread(target=self._bucle, daemon=True, name="serial")
+        self._hilo.start()
 
     def _bucle(self) -> None:
         primero = True
@@ -319,6 +342,37 @@ class LectorSerial:
                 ser.close()
             except Exception:
                 pass
+        self._hilo.join(timeout=3.0)
+
+
+class TareaMontaje(QtCore.QThread):
+    """Copia el firmware fuera del hilo de la ventana."""
+
+    avance = QtCore.pyqtSignal(str)
+    terminado = QtCore.pyqtSignal(str)
+
+    def __init__(self, puerto: str | None) -> None:
+        super().__init__()
+        self._puerto = puerto
+
+    def run(self) -> None:
+        from montar import ErrorMontaje, montar
+
+        try:
+            self.avance.emit("Copiando el firmware a la Pico...")
+            montar(self._puerto)
+        except ErrorMontaje as exc:
+            self.terminado.emit(str(exc))
+            return
+        except Exception as exc:
+            self.terminado.emit("No se pudo montar el firmware: " + str(exc))
+            return
+        self.avance.emit("Firmware copiado. Esperando a que la Pico reaparezca...")
+        for _ in range(25):
+            time.sleep(0.4)
+            if buscar_puerto():
+                break
+        self.terminado.emit("")
 
 
 class Ventana(QtWidgets.QMainWindow):
@@ -327,6 +381,7 @@ class Ventana(QtWidgets.QMainWindow):
         self.puerto = puerto
         self.intentos = intentos
         self.lector: LectorSerial | None = None
+        self._tarea: TareaMontaje | None = None
 
         self.setWindowTitle("Sismometro mk2")
         self.resize(1100, 1040)
@@ -347,6 +402,18 @@ class Ventana(QtWidgets.QMainWindow):
         self.lbl_info.setWordWrap(True)
         layout.addWidget(self.lbl_hz)
         layout.addWidget(self.lbl_info)
+
+        self.btn_montar = QtWidgets.QPushButton("Montar firmware")
+        self.btn_montar.setToolTip(
+            "Copia config, fft, espectro, modelo, adquisicion y main a la Pico, y la reinicia."
+        )
+        self.btn_montar.setMinimumHeight(34)
+        self.btn_montar.clicked.connect(self.montar_firmware)
+        fila = QtWidgets.QHBoxLayout()
+        fila.addStretch(1)
+        fila.addWidget(self.btn_montar)
+        fila.addStretch(1)
+        layout.addLayout(fila)
 
         pg.setConfigOptions(antialias=True, useOpenGL=False, background="#12141a", foreground="#d5d8e0")
         self.plot_s = pg.PlotWidget(title="Bobina")
@@ -409,8 +476,44 @@ class Ventana(QtWidgets.QMainWindow):
         self._timer.timeout.connect(self._tick)
 
     def iniciar(self) -> None:
+        if not self.puerto:
+            self.puerto = buscar_puerto() or ""
+        if not self.puerto:
+            self.lbl_info.setText("No hay Pico en el USB. Conéctala y pulsa Montar firmware.")
+            if not self._timer.isActive():
+                self._timer.start(1000 // UI_HZ)
+            return
+        if self.lector is not None:
+            self.lector.cerrar()
+            self.lector = None
         self.lector = LectorSerial(self.puerto, self.intentos)
-        self._timer.start(1000 // UI_HZ)
+        if not self._timer.isActive():
+            self._timer.start(1000 // UI_HZ)
+
+    def montar_firmware(self) -> None:
+        if self._tarea is not None and self._tarea.isRunning():
+            return
+        self.btn_montar.setEnabled(False)
+        self.lbl_info.setText("Soltando el puerto...")
+        if self.lector is not None:
+            self.lector.cerrar()
+            self.lector = None
+        puerto = buscar_puerto() or self.puerto or None
+        self._tarea = TareaMontaje(puerto)
+        self._tarea.avance.connect(self.lbl_info.setText)
+        self._tarea.terminado.connect(self._montaje_listo)
+        self._tarea.start()
+
+    def _montaje_listo(self, error: str) -> None:
+        self.btn_montar.setEnabled(True)
+        if error:
+            self.lbl_info.setText(error)
+        else:
+            self.lbl_info.setText("Firmware listo. Conectando...")
+        encontrado = buscar_puerto()
+        if encontrado:
+            self.puerto = encontrado
+        self.iniciar()
 
     def _tick(self) -> None:
         if self.lector is None:
@@ -513,6 +616,8 @@ class Ventana(QtWidgets.QMainWindow):
         self._timer.stop()
         if self.lector is not None:
             self.lector.cerrar()
+        if self._tarea is not None and self._tarea.isRunning():
+            self._tarea.wait(20000)
         super().closeEvent(event)
 
 
@@ -520,20 +625,20 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port")
     ap.add_argument("--reconectar", type=int, default=25)
+    ap.add_argument("--montar", action="store_true", help="copia el firmware antes de graficar")
     ap.add_argument("--probar", action="store_true", help="solo comprueba el lector de la linea D")
     args = ap.parse_args(argv)
     if args.probar:
         return probar()
 
-    puerto = args.port or buscar_puerto()
-    if not puerto:
-        print("No hay COM de la Pico. Usa --port COMx", file=sys.stderr)
-        return 1
-
+    puerto = args.port or buscar_puerto() or ""
     app = QtWidgets.QApplication(sys.argv)
     win = Ventana(puerto, args.reconectar)
     win.show()
-    QtCore.QTimer.singleShot(10, win.iniciar)
+    if args.montar:
+        QtCore.QTimer.singleShot(10, win.montar_firmware)
+    else:
+        QtCore.QTimer.singleShot(10, win.iniciar)
     return app.exec()
 
 

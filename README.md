@@ -65,6 +65,17 @@ V_adc = 1.65 − 12.30·z′
 
 `S_inf = Kem · (m_f / m_ef)`. La velocidad de la masa no es la de la mesa.
 
+## Ejecutable
+
+En [Releases](https://github.com/FTGProyects/sismometro-mk2/releases) está `Sismometro-mk2.exe`. No hace falta instalar Python.
+
+1. Conecta la Pico por USB y cierra Thonny.
+2. Abre el programa.
+3. Pulsa **Montar firmware**. Copia los seis módulos que lleva dentro y reinicia la placa.
+4. La gráfica se engancha sola al puerto.
+
+El mismo botón está en la ventana si arrancas el visor desde el código. Windows puede pedir confirmación la primera vez: el ejecutable no va firmado.
+
 ## Arranque
 
 Hace falta Python 3 en el PC y MicroPython en la Pico. Cierra Thonny antes de copiar el firmware: si tiene el puerto serie, la copia falla.
@@ -135,7 +146,9 @@ Si no hay fundamental, la Pico lo dice y no imprime `D` ni `S`. El candidato se 
 | `config.py` | Pico y PC | Constantes del instrumento |
 | `plot_fast.py` | PC | Ventana PyQt6 |
 | `verificar_modelo.py` | PC | Prueba del espectro y de la tabla |
-| `deploy_pico.ps1` | PC | Copia el firmware con `mpremote` |
+| `montar.py` | PC | Copia el firmware y reinicia la Pico |
+| `deploy_pico.ps1` | PC | Atajo de `montar.py` |
 | `iniciar_grafica.ps1` | PC | Despliegue opcional y visor |
+| `compilar.ps1` | PC | Genera `Sismometro-mk2.exe` |
 
 `plot_fast.py` y `verificar_modelo.py` se quedan en el PC.
