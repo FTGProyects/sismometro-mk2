@@ -439,6 +439,9 @@ class Ventana(QtWidgets.QMainWindow):
         self.plot_f.setLabel("left", "f", units="Hz")
         self.plot_y.setLabel("left", "Y", units="mm")
         self.plot_y.setLabel("bottom", "tiempo", units="s")
+        # Los datos ya están en mm. Si el prefijo automático sigue activo,
+        # un desplazamiento < 1 mm se rotula "mmm".
+        self.plot_y.getAxis("left").enableAutoSIPrefix(False)
         self.plot_f.showAxis("bottom", False)
         self.plot_y.setXLink(self.plot_f)
         for plot in (self.plot_f, self.plot_y):
@@ -461,6 +464,7 @@ class Ventana(QtWidgets.QMainWindow):
         self.plot_p = pg.PlotWidget(title="Posición")
         self.plot_p.setLabel("left", "Y", units="mm")
         self.plot_p.setLabel("bottom", "tiempo", units="ms")
+        self.plot_p.getAxis("left").enableAutoSIPrefix(False)
         self.plot_p.showGrid(x=True, y=True, alpha=0.25)
         self.plot_p.enableAutoRange(x=False, y=False)
         self.plot_p.addLine(y=0, pen=pg.mkPen(255, 255, 255, 45))
